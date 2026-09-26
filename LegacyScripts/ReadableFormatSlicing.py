@@ -39,10 +39,3 @@ with open(data_text_file, "r") as t:
         i += 23 # jump 23 lines which is the amount of lines of data for each game
 
     print("amount of games is", total_games)
-
-
-
-
-
-
-

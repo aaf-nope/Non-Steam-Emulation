@@ -6,9 +6,11 @@ import os
 from pathlib import Path
 
 
+
 #global variables
 shortcuts_file_backups_dir = "shortcuts_file_backups"
 art_supported_file_type = (".png", ".jpg", ".jpeg")
+
 
 
 # global function

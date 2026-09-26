@@ -6,8 +6,6 @@ Screens:
     2. ArtworkWindow   - back / icon / grid / hero / logo / preview / Add
     3. DonePopup       - done! / add another one / quit
 
-When merging with Main.py, search for "TODO" to find every spot
-that needs real logic wired in.
 """
 
 from __future__ import annotations
@@ -16,12 +14,16 @@ import sys
 from dataclasses import dataclass
 
 ####################################
+
+
 import vdf
 import zlib
 import shutil
 from datetime import datetime
 import os
 from pathlib import Path
+
+
 ####################################
 
 from PySide6.QtCore import Qt, Signal, QSize, QRectF
@@ -52,6 +54,8 @@ GITHUB_URL   = "https://github.com/aaf-nope/Non-Steam-Emulation"
 POPUP_SIZE = QSize(450, 220)
 
 ####################################
+
+
 STEAM_USERDATA = Path("C:\\Program Files (x86)\\Steam\\userdata")
 
 for file_path in STEAM_USERDATA.rglob("shortcuts.vdf"):
@@ -496,12 +500,20 @@ class ArtworkWindow(QWidget):
 
     def _open_grid_directory(self) -> None:
         ######################################
+
+
         os.startfile(STEAM_GRID_DIRECTORY)
+
+
         ######################################
 
     def _open_shortcuts_directory(self) -> None:
         ######################################
+
+
         os.startfile(STEAM_SHORTCUTS_DIRECTORY)
+
+
         ######################################
 
     def reset_images(self) -> None:
@@ -625,6 +637,7 @@ class WizardController:
 
         ####################################
 
+
         #create shortcuts.vdf backup just in case
         os.makedirs(SHORTCUTS_BACKUP_DIRECTORY, exist_ok=True)
         shutil.copy(f"{STEAM_SHORTCUTS_DIRECTORY}\\shortcuts.vdf", SHORTCUTS_BACKUP_DIRECTORY)
@@ -689,6 +702,7 @@ class WizardController:
 
         with open(STEAM_SHORTCUTS_FILE_PATH, "wb") as f:
             vdf.binary_dump(root, f)
+
 
         ####################################
         
