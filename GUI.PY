@@ -15,6 +15,15 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
+####################################
+import vdf
+import zlib
+import shutil
+from datetime import datetime
+import os
+from pathlib import Path
+####################################
+
 from PySide6.QtCore import Qt, Signal, QSize, QRectF
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -40,8 +49,29 @@ ARTWORK_FILE_FILTER = "Images (*.png *.jpg *.jpeg)"
 WINDOW_TITLE = "Non Steam Emulation"
 GITHUB_URL   = "https://github.com/aaf-nope/Non-Steam-Emulation"
 
-POPUP_SIZE = QSize(280, 180)
+POPUP_SIZE = QSize(450, 220)
 
+####################################
+STEAM_USERDATA = Path("C:\\Program Files (x86)\\Steam\\userdata")
+
+for file_path in STEAM_USERDATA.rglob("shortcuts.vdf"):
+    file_path = str(file_path)
+    path = file_path.split("\\")
+    for part in path:
+        if ".vdf" in part:
+            path.pop()
+    shortcuts_file_path = "\\".join(path) + "\\"
+STEAM_SHORTCUTS_DIRECTORY = shortcuts_file_path
+
+for file_path in STEAM_USERDATA.rglob("grid"):
+    STEAM_GRID_DIRECTORY = str(file_path)
+
+SHORTCUTS_BACKUP_DIRECTORY = "shortcuts_file_backups"
+
+STEAM_SHORTCUTS_FILE_PATH = f"{STEAM_SHORTCUTS_DIRECTORY}\\shortcuts.vdf"
+
+
+####################################
 
 def fit_and_center(window: QWidget, fixed_size: QSize | None = None) -> None:
     window.setFixedSize(fixed_size if fixed_size is not None else window.sizeHint())
@@ -380,7 +410,7 @@ class ArtworkWindow(QWidget):
         left_column_layout.addWidget(self.back_button)
 
         self.icon_button = ImagePickerButton(
-            placeholder_text="icon",
+            placeholder_text="browse icon",
             file_filter=ICON_FILE_FILTER,
             box_size=QSize(self.LEFT_COLUMN_WIDTH, self.ICON_SIZE),
         )
@@ -388,7 +418,7 @@ class ArtworkWindow(QWidget):
         left_column_layout.addWidget(self.icon_button)
 
         self.grid_button = ImagePickerButton(
-            placeholder_text="grid",
+            placeholder_text="browse grid",
             file_filter=ARTWORK_FILE_FILTER,
             box_size=QSize(self.LEFT_COLUMN_WIDTH, self.GRID_HEIGHT),
         )
@@ -398,7 +428,7 @@ class ArtworkWindow(QWidget):
         grid_layout.addWidget(left_column_widget, 0, 0, 4, 1)
 
         self.hero_button = ImagePickerButton(
-            placeholder_text="hero",
+            placeholder_text="browse hero",
             file_filter=ARTWORK_FILE_FILTER,
             box_size=QSize(self.HERO_WIDTH, self.HERO_HEIGHT),
         )
@@ -412,7 +442,7 @@ class ArtworkWindow(QWidget):
         middle_column_layout.setSpacing(self.GRID_SPACING)
 
         self.logo_button = ImagePickerButton(
-            placeholder_text="logo",
+            placeholder_text="browse logo",
             file_filter=ARTWORK_FILE_FILTER,
             box_size=QSize(self.MIDDLE_COLUMN_WIDTH, self.SPLIT_BUTTON_HEIGHT),
         )
@@ -420,7 +450,7 @@ class ArtworkWindow(QWidget):
         middle_column_layout.addWidget(self.logo_button)
 
         self.preview_button = ImagePickerButton(
-            placeholder_text="preview",
+            placeholder_text="browse preview",
             file_filter=ARTWORK_FILE_FILTER,
             box_size=QSize(self.MIDDLE_COLUMN_WIDTH, self.SPLIT_BUTTON_HEIGHT),
         )
@@ -465,14 +495,14 @@ class ArtworkWindow(QWidget):
         self.entry.preview_path = file_path
 
     def _open_grid_directory(self) -> None:
-        # TODO: open the Steam grid folder here.
-        # QDesktopServices.openUrl(QUrl.fromLocalFile(str(grid_path)))
-        pass
+        ######################################
+        os.startfile(STEAM_GRID_DIRECTORY)
+        ######################################
 
     def _open_shortcuts_directory(self) -> None:
-        # TODO: open the shortcuts.vdf folder here.
-        # QDesktopServices.openUrl(QUrl.fromLocalFile(str(shortcuts_dir)))
-        pass
+        ######################################
+        os.startfile(STEAM_SHORTCUTS_DIRECTORY)
+        ######################################
 
     def reset_images(self) -> None:
         self.icon_button.reset_placeholder("icon")
@@ -503,12 +533,17 @@ class DonePopup(QDialog):
         layout.setSpacing(10)
         layout.setAlignment(Qt.AlignCenter)
 
-        done_label = QLabel("done !")
+        done_label = QLabel("Game Added !")
         done_font = QFont()
         done_font.setPointSize(16)
         done_font.setBold(True)
         done_label.setFont(done_font)
         done_label.setAlignment(Qt.AlignCenter)
+
+        backup_label = QLabel(f"backup of shortcuts.vdf was made in:\n{SHORTCUTS_BACKUP_DIRECTORY}")
+        backup_label.setAlignment(Qt.AlignCenter)
+        backup_label.setWordWrap(True)
+        backup_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         add_another_button = QPushButton("add another one")
         add_another_button.clicked.connect(self._choose_add_another)
@@ -517,6 +552,7 @@ class DonePopup(QDialog):
         quit_button.clicked.connect(self._choose_quit)
 
         layout.addWidget(done_label)
+        layout.addWidget(backup_label)
         layout.addWidget(add_another_button, alignment=Qt.AlignCenter)
         layout.addWidget(quit_button, alignment=Qt.AlignCenter)
 
@@ -587,6 +623,75 @@ class WizardController:
         #   self.entry.game_name, emulator_path, game_path
         #   self.entry.icon_path, hero_path, grid_path, logo_path, preview_path
 
+        ####################################
+
+        #create shortcuts.vdf backup just in case
+        os.makedirs(SHORTCUTS_BACKUP_DIRECTORY, exist_ok=True)
+        shutil.copy(f"{STEAM_SHORTCUTS_DIRECTORY}\\shortcuts.vdf", SHORTCUTS_BACKUP_DIRECTORY)
+        now = datetime.now()
+        now = now.strftime("%Y-%m-%d-%H%M%S")
+        os.rename(f"{SHORTCUTS_BACKUP_DIRECTORY}\\shortcuts.vdf", f"{SHORTCUTS_BACKUP_DIRECTORY}\\shortcuts_backup_{now}.vdf")
+
+
+        #calculate appid and artid(game art)
+        combined_string = (self.entry.game_name + self.entry.emulator_path + "\0")
+        crc = zlib.crc32(combined_string.encode('cp1252'))
+        art_id = crc | 0x80000000
+        app_id = art_id
+        app_id -= 0x100000000
+
+        emulator_start_in_path = Path(self.entry.emulator_path)
+        emulator_start_in_path = str(emulator_start_in_path.parent)
+
+        
+        # Adding Game Art
+        if self.entry.grid_path and not os.path.exists(f"{STEAM_GRID_DIRECTORY}\\{art_id}p.png"):
+            shutil.copy(self.entry.grid_path, STEAM_GRID_DIRECTORY)
+            os.rename(f"{STEAM_GRID_DIRECTORY}\\{os.path.basename(self.entry.grid_path)}", f"{STEAM_GRID_DIRECTORY}\\{art_id}p.png")
+
+        if self.entry.hero_path and not os.path.exists(f"{STEAM_GRID_DIRECTORY}\\{art_id}_hero.png"):
+            shutil.copy(self.entry.hero_path, STEAM_GRID_DIRECTORY)
+            os.rename(f"{STEAM_GRID_DIRECTORY}\\{os.path.basename(self.entry.hero_path)}", f"{STEAM_GRID_DIRECTORY}\\{art_id}_hero.png")
+
+        if self.entry.logo_path and not os.path.exists(f"{STEAM_GRID_DIRECTORY}\\{art_id}_logo.png"):
+            shutil.copy(self.entry.logo_path, STEAM_GRID_DIRECTORY)
+            os.rename(f"{STEAM_GRID_DIRECTORY}\\{os.path.basename(self.entry.logo_path)}", f"{STEAM_GRID_DIRECTORY}\\{art_id}_logo.png")
+
+        if self.entry.preview_path and not os.path.exists(f"{STEAM_GRID_DIRECTORY}\\{art_id}.png"):
+            shutil.copy(self.entry.preview_path, STEAM_GRID_DIRECTORY)
+            os.rename(f"{STEAM_GRID_DIRECTORY}\\{os.path.basename(self.entry.preview_path)}", f"{STEAM_GRID_DIRECTORY}\\{art_id}.png")
+
+
+        #adding game data to the file
+        new_game =  {'appid': app_id,
+                    'AppName': self.entry.game_name,
+                    'Exe': f"\"{self.entry.emulator_path}\" \"{self.entry.game_path}\"",
+                    'StartDir': emulator_start_in_path,
+                    'icon': self.entry.icon_path,
+                    'ShortcutPath': '',
+                    'LaunchOptions': '',
+                    'IsHidden': 0,
+                    'AllowDesktopConfig': 1,
+                    'AllowOverlay': 1,
+                    'OpenVR': 0,
+                    'Devkit': 0,
+                    'DevkitGameID': '',
+                    'DevkitOverrideAppID': 0,
+                    'LastPlayTime': 0,
+                    'FlatpakAppID': '',
+                    'sortas': '',
+                    'tags': {}}
+
+        with open(STEAM_SHORTCUTS_FILE_PATH, "rb") as f:
+            root = vdf.binary_load(f)
+            root['shortcuts'][str(len(root['shortcuts']))] = new_game
+            root['shortcuts'] = root['shortcuts']
+
+        with open(STEAM_SHORTCUTS_FILE_PATH, "wb") as f:
+            vdf.binary_dump(root, f)
+
+        ####################################
+        
         done_popup = DonePopup(self._host)
         done_popup.exec()
 
