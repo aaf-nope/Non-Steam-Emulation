@@ -722,6 +722,14 @@ class WizardController:
 
 def main() -> None:
     app = QApplication(sys.argv)
+    
+    if hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        
+    icon_path = os.path.join(base_path, "icon.ico")
+    app.setWindowIcon(QIcon(icon_path))
 
     controller = WizardController()
     controller.start()
