@@ -95,31 +95,6 @@ No Python installation is required for the packaged version.
 ```powershell
 python GUI.py
 ```
-
-## Usage
-
-When the application starts, it guides you through the process of adding a game.
-
-### 1. Enter the Game Name
-
-Enter the name you want Steam to display.
-
-### 2. Select the Emulator
-
-Choose the emulator executable that should be used to launch the game.
-
-### 3. Select the Game
-
-Choose the ROM/game file that should be passed to the emulator.
-
-### 4. Select Artwork
-
-Artwork is optional. You can provide the files you want to use for the Steam library entry.
-
-### 5. Add the Game
-
-The application creates the required Steam shortcut information, handles the artwork, backs up the existing shortcut file, and adds the new entry.
-
 > **Important:** Steam should be closed while the application modifies `shortcuts.vdf`.
 
 ## Project Structure
