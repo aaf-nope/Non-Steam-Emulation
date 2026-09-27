@@ -1,10 +1,17 @@
 """
 Non Steam Emulation - GUI (PySide6)
 
-Screens:
-    1. GameInfoWindow  - game name / emulator path / game path / Next
-    2. ArtworkWindow   - back / icon / grid / hero / logo / preview / Add
-    3. DonePopup       - done! / add another one / quit
+One single window (fixed size, matched to the artwork screen) that steps
+through four pages via a QStackedWidget instead of popping separate
+windows/dialogs in and out:
+
+    1. ShortcutsPage  - intro (title/description/github link) + pick or
+                         create shortcuts.vdf / browse manually / Next
+    2. GameInfoWindow - back / game name / emulator path / game path / Next
+    3. ArtworkWindow  - back / icon / grid / hero / logo / preview / Add
+                         (left exactly as-is)
+    4. DonePage       - "Game Added!" / backup path / add another,
+                         restart steam, quit
 
 """
 
@@ -19,6 +26,8 @@ from dataclasses import dataclass
 import vdf
 import zlib
 import shutil
+import subprocess
+import time
 from datetime import datetime
 import os
 from pathlib import Path
@@ -32,7 +41,6 @@ from PySide6.QtCore import Qt, Signal, QSize, QRectF
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -53,7 +61,51 @@ ARTWORK_FILE_FILTER = "Images (*.png *.jpg *.jpeg)"
 WINDOW_TITLE = "Non Steam Emulation"
 GITHUB_URL   = "https://github.com/aaf-nope/Non-Steam-Emulation"
 
-POPUP_SIZE = QSize(450, 220)
+####################################
+
+# Shared sizing so full-width buttons (Next / Back / the shortcuts-picker
+# Next) line up with identical width and horizontal position across every
+# page of the wizard.
+LABEL_WIDTH         = 110
+PATH_FIELD_WIDTH    = 300
+BROWSE_BUTTON_WIDTH = 70
+ROW_SPACING         = 10
+NAME_FIELD_WIDTH    = PATH_FIELD_WIDTH + ROW_SPACING + BROWSE_BUTTON_WIDTH
+TOTAL_ROW_WIDTH     = LABEL_WIDTH + ROW_SPACING + NAME_FIELD_WIDTH
+
+# Colour language used across the redesigned pages:
+#   grey  -> static text / labels
+#   black -> a path once it has been chosen (read-only fields)
+#   blue  -> a field the user actually types into
+#   purple-> buttons
+ACCENT_BLUE         = "#4C6FFF"
+ACCENT_ACTION       = "#3AA0DE"
+ACCENT_ACTION_HOVER = "#57B4E8"
+
+
+def style_primary(button: QPushButton, radius: int = 6) -> None:
+    """Apply the shared cyan-blue "primary button" look used for every
+    Next / Back / Browse / action button in the redesigned UI."""
+    button.setStyleSheet(
+        f"""
+        QPushButton {{
+            background-color: {ACCENT_ACTION};
+            color: white;
+            border: none;
+            border-radius: {radius}px;
+            font-weight: bold;
+            padding: 6px;
+        }}
+        QPushButton:hover {{
+            background-color: {ACCENT_ACTION_HOVER};
+        }}
+        QPushButton:disabled {{
+            background-color: #a9d4ef;
+            color: #f0f0f0;
+        }}
+        """
+    )
+
 
 ####################################
 
@@ -62,7 +114,8 @@ STEAM_USERDATA = Path("C:\\Program Files (x86)\\Steam\\userdata")
 
 SHORTCUTS_BACKUP_DIRECTORY = "shortcuts_file_backups"
 
-# These are set at runtime by main() after the user picks a file / folder.
+# These are set at runtime by WizardController once the user confirms a
+# shortcuts.vdf on the first page.
 STEAM_SHORTCUTS_FILE_PATH  = ""
 STEAM_SHORTCUTS_DIRECTORY  = ""
 STEAM_GRID_DIRECTORY       = ""
@@ -111,6 +164,54 @@ def create_empty_shortcuts_vdf(file_path: str) -> None:
     empty_root["shortcuts"] = vdf.VDFDict()
     with open(file_path, "wb") as f:
         vdf.binary_dump(empty_root, f)
+
+
+def restart_steam() -> None:
+    """Shut Steam down gracefully (if running), wait for it to exit,
+    then relaunch it.
+    """
+    steam_path = r"C:\Program Files (x86)\Steam\steam.exe"
+
+    if not os.path.exists(steam_path):
+        return
+
+    try:
+        # Check if steam is currently running
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq steam.exe"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        is_running = "steam.exe" in result.stdout.lower()
+
+        if is_running:
+            # --- Step 1: request graceful shutdown ---
+            subprocess.run([steam_path, "-shutdown"], check=False)
+
+            # --- Step 2: wait for all steam.exe processes to die ---
+            timeout = 30          # maximum seconds to wait
+            poll_interval = 1     # seconds between checks
+            elapsed = 0
+            while elapsed < timeout:
+                time.sleep(poll_interval)
+                elapsed += poll_interval
+                res = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq steam.exe"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if "steam.exe" not in res.stdout.lower():
+                    break  # Steam is fully gone
+    except Exception as e:
+        print(f"Error during Steam shutdown check: {e}")
+
+    # --- Step 3: relaunch ---
+    try:
+        subprocess.Popen([steam_path])
+    except Exception as e:
+        print(f"Error launching Steam: {e}")
 
 
 def fit_and_center(window: QWidget, fixed_size: QSize | None = None) -> None:
@@ -247,34 +348,295 @@ class ImagePickerButton(QPushButton):
         painter.drawRoundedRect(border_rect, self.CORNER_RADIUS, self.CORNER_RADIUS)
 
 
+class ShortcutsPage(QWidget):
+    """Page 1: intro (title / description / github link) on the left,
+    the list of discovered shortcuts.vdf files on the right, a manual
+    browse row, and a full-width Next button at the bottom."""
+
+    next_requested = Signal(str)  # emits the confirmed shortcuts.vdf path
+
+    INTRO_WIDTH    = 240
+    ACCOUNTS_WIDTH = TOTAL_ROW_WIDTH - INTRO_WIDTH - ROW_SPACING
+
+    def __init__(
+        self,
+        existing_vdfs: list[str],
+        user_dirs: list[Path],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(WINDOW_TITLE)
+        self.file_path = ""
+        self._existing = existing_vdfs
+        self._user_dirs = user_dirs
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(40, 30, 40, 40)
+        root.setSpacing(14)
+        root.setAlignment(Qt.AlignTop)
+
+        # --- intro (left) + shortcuts.vdf list (right) ----------------
+        top_row = QHBoxLayout()
+        top_row.setSpacing(ROW_SPACING)
+
+        intro_widget = QWidget()
+        intro_widget.setFixedWidth(self.INTRO_WIDTH)
+        intro_layout = QVBoxLayout(intro_widget)
+        intro_layout.setContentsMargins(0, 0, 0, 0)
+        intro_layout.setSpacing(10)
+
+        title_label = QLabel("Non Steam Emulation")
+        title_font = QFont()
+        title_font.setPointSize(15)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setWordWrap(True)
+
+        subtitle_label = QLabel("A tool that makes adding emulated games to steam easier")
+        subtitle_label.setWordWrap(True)
+
+        link_label = QLabel(f'<a href="{GITHUB_URL}">{GITHUB_URL}</a>')
+        link_label.setOpenExternalLinks(True)
+        link_label.setWordWrap(True)
+
+        for widget in (title_label, subtitle_label, link_label):
+            intro_layout.addWidget(widget)
+        intro_layout.addStretch(1)
+
+        accounts_widget = QWidget()
+        accounts_widget.setFixedWidth(self.ACCOUNTS_WIDTH)
+        accounts_layout = QVBoxLayout(accounts_widget)
+        accounts_layout.setContentsMargins(0, 0, 0, 0)
+        accounts_layout.setSpacing(8)
+
+        self._list_title_label = QLabel()
+        list_title_font = QFont()
+        list_title_font.setBold(True)
+        self._list_title_label.setFont(list_title_font)
+        self._list_title_label.setWordWrap(True)
+        accounts_layout.addWidget(self._list_title_label)
+
+        self._list_sub_label = QLabel()
+        self._list_sub_label.setWordWrap(True)
+        accounts_layout.addWidget(self._list_sub_label)
+
+        self._btn_area = QVBoxLayout()
+        self._btn_area.setSpacing(6)
+        accounts_layout.addLayout(self._btn_area)
+        accounts_layout.addStretch(1)
+
+        top_row.addWidget(intro_widget)
+        top_row.addWidget(accounts_widget)
+        root.addStretch(3)
+        root.addLayout(top_row)
+
+        root.addStretch(1)
+
+        # --- status line (replaces pop-ups) ------------------------------
+        self._status_label = QLabel("")
+        self._status_label.setAlignment(Qt.AlignCenter)
+        self._status_label.setWordWrap(True)
+        root.addWidget(self._status_label)
+
+        # --- manual browse row, kept just in case -------------------------
+        browse_container = QWidget()
+        browse_container.setFixedWidth(TOTAL_ROW_WIDTH)
+        browse_row = QHBoxLayout(browse_container)
+        browse_row.setContentsMargins(0, 0, 0, 0)
+        browse_row.setSpacing(ROW_SPACING)
+        self._path_edit = QLineEdit()
+        self._path_edit.setReadOnly(True)
+        self._path_edit.setPlaceholderText("or browse for shortcuts.vdf manually...")
+        browse_btn = QPushButton("Browse")
+        browse_btn.setFixedWidth(BROWSE_BUTTON_WIDTH)
+        style_primary(browse_btn)
+        browse_btn.clicked.connect(self._browse)
+        browse_row.addWidget(self._path_edit)
+        browse_row.addWidget(browse_btn)
+        root.addWidget(browse_container, alignment=Qt.AlignHCenter)
+
+        # --- Next button, full width ---------------------------------
+        self.next_button = QPushButton("Next")
+        self.next_button.setFixedWidth(TOTAL_ROW_WIDTH)
+        self.next_button.setEnabled(False)
+        style_primary(self.next_button)
+        self.next_button.clicked.connect(self._on_next_clicked)
+        root.addWidget(self.next_button, alignment=Qt.AlignHCenter)
+
+        self._populate()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _clear_btn_area(self) -> None:
+        while self._btn_area.count():
+            item = self._btn_area.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _set_status(self, text: str, color: str = "#5dade2") -> None:
+        self._status_label.setStyleSheet(f"color: {color};")
+        self._status_label.setText(text)
+
+    def _confirm(self, path: str) -> None:
+        """Called when a final file path is chosen (by button or browse)."""
+        self.file_path = path
+        self._path_edit.setText(path)
+        self.next_button.setEnabled(True)
+        self._set_status(f"\u2713  {path}", color="#2ecc71")
+
+    def show_error(self, text: str) -> None:
+        """Called by the controller when the confirmed file turns out to
+        be invalid; keeps the user on this page instead of a pop-up."""
+        self.file_path = ""
+        self.next_button.setEnabled(False)
+        self._set_status(text, color="#e74c3c")
+
+    # ------------------------------------------------------------------
+    # Population
+    # ------------------------------------------------------------------
+
+    def _populate(self) -> None:
+        self._clear_btn_area()
+
+        if not self._user_dirs:
+            # ── Case: Steam userdata folder not found ────────────────────
+            self._list_title_label.setText("Steam userdata folder not found")
+            self._list_sub_label.setText(
+                "Browse for an existing shortcuts.vdf manually:\n"
+                "(Steam\\userdata\\<SteamID>\\config\\shortcuts.vdf)"
+            )
+            return
+
+        existing_set = set(self._existing)  # for O(1) lookup
+
+        if len(self._user_dirs) == 1:
+            udir = self._user_dirs[0]
+            vdf_path = str(udir / "config" / "shortcuts.vdf")
+            if vdf_path in existing_set:
+                # ── Single user, already has vdf ─────────────────────────
+                self._list_title_label.setText("shortcuts.vdf found")
+                self._list_sub_label.setText(
+                    f"Found shortcuts.vdf for Steam ID {udir.name}."
+                )
+                self._confirm(vdf_path)
+            else:
+                # ── Single user, no vdf → auto-create silently ───────────
+                self._list_title_label.setText("No shortcuts.vdf found")
+                self._list_sub_label.setText(
+                    f"Creating shortcuts.vdf for Steam ID {udir.name}..."
+                )
+                try:
+                    create_empty_shortcuts_vdf(vdf_path)
+                    self._confirm(vdf_path)
+                    self._list_sub_label.setText(
+                        f"shortcuts.vdf created for Steam ID {udir.name}."
+                    )
+                except Exception as exc:
+                    self._set_status(f"Error: {exc}", color="#e74c3c")
+            return
+
+        # ── Multiple user dirs: always show all of them ──────────────────
+        has_any_vdf = bool(self._existing)
+        if has_any_vdf:
+            self._list_title_label.setText("Select a Steam account")
+            self._list_sub_label.setText(
+                "\u2713 = has shortcuts.vdf,  \u2717 = will be created"
+            )
+        else:
+            self._list_title_label.setText("No shortcuts.vdf found")
+            self._list_sub_label.setText(
+                "Choose which account to create shortcuts.vdf for:"
+            )
+
+        for udir in self._user_dirs:
+            steam_id  = udir.name
+            vdf_path  = str(udir / "config" / "shortcuts.vdf")
+            has_vdf   = vdf_path in existing_set
+            marker    = "\u2713 has vdf" if has_vdf else "\u2717 no vdf"
+            label     = f"Steam ID {steam_id}   |   {marker}"
+            btn = QPushButton(label)
+            btn.setCursor(Qt.PointingHandCursor)
+            if has_vdf:
+                captured_path = vdf_path
+                btn.clicked.connect(
+                    lambda checked=False, p=captured_path: self._select_existing(p)
+                )
+            else:
+                captured_dir = udir
+                btn.clicked.connect(
+                    lambda checked=False, d=captured_dir: self._create_for(d)
+                )
+            self._btn_area.addWidget(btn)
+
+    # ------------------------------------------------------------------
+    # Button actions
+    # ------------------------------------------------------------------
+
+    def _create_for(self, user_dir: Path) -> None:
+        target = str(user_dir / "config" / "shortcuts.vdf")
+        try:
+            create_empty_shortcuts_vdf(target)
+            self._confirm(target)
+            self._list_sub_label.setText(
+                f"shortcuts.vdf created for Steam ID {user_dir.name}."
+            )
+        except Exception as exc:
+            self._set_status(f"Error: {exc}", color="#e74c3c")
+
+    def _select_existing(self, vdf_path: str) -> None:
+        """Use an existing shortcuts.vdf chosen via an account button.
+
+        Account buttons are left enabled (not locked/greyed out) so the
+        user can freely change their pick, including after going Back
+        from a later page.
+        """
+        self._confirm(vdf_path)
+
+    def _browse(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select shortcuts.vdf", "", "VDF files (*.vdf)"
+        )
+        if file_path:
+            self._confirm(file_path)
+
+    def _on_next_clicked(self) -> None:
+        if self.file_path:
+            self.next_requested.emit(self.file_path)
+
+
 class GameInfoWindow(QWidget):
-    """Screen 1: app header + game name / emulator path / game path / Next."""
+    """Page 2: back / game name / emulator path / game path / Next."""
 
+    back_requested = Signal()
     next_requested = Signal()
-
-    LABEL_WIDTH = 110
-    PATH_FIELD_WIDTH = 300
-    BROWSE_BUTTON_WIDTH = 70
-    ROW_SPACING = 10
-    NAME_FIELD_WIDTH = PATH_FIELD_WIDTH + ROW_SPACING + BROWSE_BUTTON_WIDTH
-    TOTAL_ROW_WIDTH = LABEL_WIDTH + ROW_SPACING + NAME_FIELD_WIDTH
 
     def __init__(self, entry: GameEntry, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.entry = entry
         self.setWindowTitle(WINDOW_TITLE)
-        self._forced_size: QSize | None = None  # set by WizardController
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(40, 40, 40, 40)
         root_layout.setSpacing(24)
         root_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
-        root_layout.addLayout(self._build_intro_section())
+        self.back_button = QPushButton("Back")
+        self.back_button.setFixedWidth(TOTAL_ROW_WIDTH)
+        style_primary(self.back_button)
+        self.back_button.clicked.connect(self.back_requested.emit)
+        root_layout.addWidget(self.back_button, alignment=Qt.AlignHCenter)
+
+        root_layout.addStretch(1)
 
         self.game_name_edit = QLineEdit()
         self.game_name_edit.setPlaceholderText("Enter game name here...")
-        self.game_name_edit.setFixedWidth(self.NAME_FIELD_WIDTH)
+        self.game_name_edit.setFixedWidth(NAME_FIELD_WIDTH)
+        # Blue border marks this as the one field you actually type into.
+        self.game_name_edit.setStyleSheet(
+            f"QLineEdit {{ border: 2px solid {ACCENT_BLUE}; border-radius: 4px; padding: 3px 6px; }}"
+        )
         self.game_name_edit.textChanged.connect(self._update_next_button_state)
         root_layout.addLayout(self._labeled_row("Game Name :", self.game_name_edit))
 
@@ -283,6 +645,7 @@ class GameInfoWindow(QWidget):
         self.emulator_path_edit.setPlaceholderText("No emulator selected...")
         self.emulator_path_edit.textChanged.connect(self._update_next_button_state)
         emulator_browse_button = QPushButton("browse")
+        style_primary(emulator_browse_button)
         emulator_browse_button.clicked.connect(self._browse_emulator_path)
         root_layout.addLayout(
             self._labeled_row("Emulator path", self.emulator_path_edit, emulator_browse_button)
@@ -292,56 +655,20 @@ class GameInfoWindow(QWidget):
         self.game_path_edit.setReadOnly(True)
         self.game_path_edit.setPlaceholderText("No game selected...")
         game_browse_button = QPushButton("browse")
+        style_primary(game_browse_button)
         game_browse_button.clicked.connect(self._browse_game_path)
         root_layout.addLayout(
             self._labeled_row("Game path", self.game_path_edit, game_browse_button)
         )
 
+        root_layout.addStretch(1)
+
         self.next_button = QPushButton("Next")
-        self.next_button.setFixedWidth(self.TOTAL_ROW_WIDTH)
+        self.next_button.setFixedWidth(TOTAL_ROW_WIDTH)
         self.next_button.setEnabled(False)
+        style_primary(self.next_button)
         self.next_button.clicked.connect(self._on_next_clicked)
         root_layout.addWidget(self.next_button, alignment=Qt.AlignHCenter)
-
-    def set_forced_size(self, size: QSize) -> None:
-        self._forced_size = size
-        if self.isVisible():
-            fit_and_center(self, self._forced_size)
-
-    def _build_intro_section(self) -> QVBoxLayout:
-        intro_layout = QVBoxLayout()
-        intro_layout.setSpacing(12)
-        intro_layout.setContentsMargins(0, 0, 0, 8)
-        intro_layout.setAlignment(Qt.AlignCenter)
-
-        title_label = QLabel("Non Steam Emulation")
-        title_font = QFont()
-        title_font.setPointSize(16)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
-        title_label.setAlignment(Qt.AlignCenter)
-
-        subtitle_label = QLabel("A tool that makes adding emulated games to steam easier")
-        subtitle_label.setAlignment(Qt.AlignCenter)
-        subtitle_label.setWordWrap(True)
-        subtitle_label.setFixedWidth(self.TOTAL_ROW_WIDTH)
-        subtitle_label.setMinimumHeight(44)
-
-        link_label = QLabel(f'<a href="{GITHUB_URL}">{GITHUB_URL}</a>')
-        link_label.setAlignment(Qt.AlignCenter)
-        link_label.setOpenExternalLinks(True)
-
-        warning_label = QLabel("!!! make sure to quit steam first !!!")
-        warning_label.setAlignment(Qt.AlignCenter)
-        warning_label.setStyleSheet("color: red; font-weight: bold;")
-        warning_label.setWordWrap(True)
-        warning_label.setFixedWidth(self.TOTAL_ROW_WIDTH)
-        warning_label.setMinimumHeight(28)
-
-        for widget in (title_label, subtitle_label, link_label, warning_label):
-            intro_layout.addWidget(widget)
-
-        return intro_layout
 
     def _labeled_row(
         self,
@@ -350,14 +677,14 @@ class GameInfoWindow(QWidget):
         browse_button: QPushButton | None = None,
     ) -> QHBoxLayout:
         row_layout = QHBoxLayout()
-        row_layout.setSpacing(self.ROW_SPACING)
+        row_layout.setSpacing(ROW_SPACING)
         label = QLabel(label_text)
-        label.setFixedWidth(self.LABEL_WIDTH)
+        label.setFixedWidth(LABEL_WIDTH)
         row_layout.addWidget(label)
         row_layout.addWidget(line_edit)
         if browse_button is not None:
-            line_edit.setFixedWidth(self.PATH_FIELD_WIDTH)
-            browse_button.setFixedWidth(self.BROWSE_BUTTON_WIDTH)
+            line_edit.setFixedWidth(PATH_FIELD_WIDTH)
+            browse_button.setFixedWidth(BROWSE_BUTTON_WIDTH)
             row_layout.addWidget(browse_button)
         return row_layout
 
@@ -391,14 +718,12 @@ class GameInfoWindow(QWidget):
         self.emulator_path_edit.setText(self.entry.emulator_path)
         self.game_path_edit.setText(self.entry.game_path)
 
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        if self.parent() is None:  # skip when embedded in QStackedWidget
-            fit_and_center(self, self._forced_size)
-
 
 class ArtworkWindow(QWidget):
-    """Screen 2: back / icon / grid / hero / logo / preview / Add."""
+    """Page 3: back / icon / grid / hero / logo / preview / Add.
+
+    Left untouched, exactly as it was before the overhaul.
+    """
 
     back_requested = Signal()
     add_requested  = Signal()
@@ -446,6 +771,7 @@ class ArtworkWindow(QWidget):
 
         self.back_button = QPushButton("back")
         self.back_button.setFixedSize(self.LEFT_COLUMN_WIDTH, self.BACK_BUTTON_HEIGHT)
+        style_primary(self.back_button)
         self.back_button.clicked.connect(self.back_requested.emit)
         left_column_layout.addWidget(self.back_button)
 
@@ -516,6 +842,7 @@ class ArtworkWindow(QWidget):
 
         self.add_button = QPushButton("Add")
         self.add_button.setFixedSize(self.RIGHT_COLUMN_WIDTH, self.ADD_BUTTON_HEIGHT)
+        style_primary(self.add_button, radius=8)
         self.add_button.clicked.connect(self.add_requested.emit)
         grid_layout.addWidget(self.add_button, 3, 2)
 
@@ -565,329 +892,111 @@ class ArtworkWindow(QWidget):
             fit_and_center(self)
 
 
-class DonePopup(QDialog):
-    """Screen 3: done! / add another one / quit."""
+class DonePage(QWidget):
+    """Page 4: "Game Added!" / backup path / add another, restart, quit."""
 
-    ADD_ANOTHER = "add_another"
-    QUIT = "quit"
+    add_another_requested = Signal()
+    restart_requested      = Signal()
+    quit_requested          = Signal()
+
+    ACTION_BUTTON_SIZE = 90
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(WINDOW_TITLE)
-        self.choice: str = self.QUIT
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(10)
-        layout.setAlignment(Qt.AlignCenter)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(40, 30, 40, 30)
+        root.setSpacing(14)
+        root.setAlignment(Qt.AlignCenter)
 
-        done_label = QLabel("Game Added !")
+        root.addStretch(1)
+
+        done_label = QLabel("Game Added!")
         done_font = QFont()
-        done_font.setPointSize(16)
+        done_font.setPointSize(24)
         done_font.setBold(True)
         done_label.setFont(done_font)
         done_label.setAlignment(Qt.AlignCenter)
+        root.addWidget(done_label)
 
-        backup_label = QLabel(f"backup of shortcuts.vdf was made in:\n{SHORTCUTS_BACKUP_DIRECTORY}")
-        backup_label.setAlignment(Qt.AlignCenter)
-        backup_label.setWordWrap(True)
-        backup_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._backup_label = QLabel("")
+        self._backup_label.setAlignment(Qt.AlignCenter)
+        self._backup_label.setWordWrap(True)
+        self._backup_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(self._backup_label)
 
-        add_another_button = QPushButton("add another one")
-        add_another_button.clicked.connect(self._choose_add_another)
+        warning_label = QLabel("!!! restart Steam for changes to take effect !!!")
+        warning_label.setStyleSheet("color: red; font-weight: bold;")
+        warning_label.setAlignment(Qt.AlignCenter)
+        warning_label.setWordWrap(True)
+        root.addWidget(warning_label)
 
-        quit_button = QPushButton("quit")
-        quit_button.clicked.connect(self._choose_quit)
+        root.addSpacing(20)
 
-        layout.addWidget(done_label)
-        layout.addWidget(backup_label)
-        layout.addWidget(add_another_button, alignment=Qt.AlignCenter)
-        layout.addWidget(quit_button, alignment=Qt.AlignCenter)
-
-    def _choose_add_another(self) -> None:
-        self.choice = self.ADD_ANOTHER
-        self.accept()
-
-    def _choose_quit(self) -> None:
-        self.choice = self.QUIT
-        self.accept()
-
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        fit_and_center(self, POPUP_SIZE)
-
-
-class ShortcutsPickerDialog(QDialog):
-    """Single dialog that handles every shortcuts.vdf startup scenario:
-
-    • existing_vdfs has items  → show one button per vdf (pick which user)
-    • existing_vdfs is empty,
-      user_dirs has one entry  → auto-create immediately (no buttons needed)
-    • existing_vdfs is empty,
-      user_dirs has many entries → show one button per user dir to create in
-    • no userdata folder at all → show manual Browse fallback
-
-    No pop-ups open; all feedback happens via the status label inside the
-    dialog itself.
-    """
-
-    def __init__(
-        self,
-        existing_vdfs: list[str],
-        user_dirs: list[Path],
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(WINDOW_TITLE)
-        self.file_path = ""  # result written here before accept()
-        self._existing = existing_vdfs
-        self._user_dirs = user_dirs
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 24, 28, 24)
-        outer.setSpacing(12)
-        outer.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-
-        # --- title -------------------------------------------------------
-        self._title_label = QLabel()
-        self._title_label.setAlignment(Qt.AlignCenter)
-        title_font = QFont()
-        title_font.setPointSize(11)
-        title_font.setBold(True)
-        self._title_label.setFont(title_font)
-        outer.addWidget(self._title_label)
-
-        # --- subtitle / instruction --------------------------------------
-        self._sub_label = QLabel()
-        self._sub_label.setAlignment(Qt.AlignCenter)
-        self._sub_label.setWordWrap(True)
-        outer.addWidget(self._sub_label)
-
-        # --- dynamic button area -----------------------------------------
-        self._btn_area = QVBoxLayout()
-        self._btn_area.setSpacing(6)
-        outer.addLayout(self._btn_area)
-
-        # --- status line (replaces pop-ups) ------------------------------
-        self._status_label = QLabel("")
-        self._status_label.setAlignment(Qt.AlignCenter)
-        self._status_label.setStyleSheet("color: #5dade2;")
-        self._status_label.setWordWrap(True)
-        outer.addWidget(self._status_label)
-
-        # --- manual browse row -------------------------------------------
-        browse_row = QHBoxLayout()
-        self._path_edit = QLineEdit()
-        self._path_edit.setReadOnly(True)
-        self._path_edit.setPlaceholderText("or browse for shortcuts.vdf manually...")
-        browse_btn = QPushButton("Browse")
-        browse_btn.setFixedWidth(70)
-        browse_btn.clicked.connect(self._browse)
-        browse_row.addWidget(self._path_edit)
-        browse_row.addWidget(browse_btn)
-        outer.addLayout(browse_row)
-
-        # --- done button -------------------------------------------------
-        self._done_btn = QPushButton("Done")
-        self._done_btn.setEnabled(False)
-        self._done_btn.clicked.connect(self.accept)
-        outer.addWidget(self._done_btn, alignment=Qt.AlignCenter)
-
-        # --- quit button -------------------------------------------------
-        quit_btn = QPushButton("Quit")
-        quit_btn.clicked.connect(self.reject)
-        outer.addWidget(quit_btn, alignment=Qt.AlignCenter)
-
-        # Enforce a consistent minimum width so all scenarios look the same
-        self.setMinimumWidth(640)
-
-        # Build the initial state
-        self._populate()
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _clear_btn_area(self) -> None:
-        while self._btn_area.count():
-            item = self._btn_area.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-    def _set_status(self, text: str, color: str = "#5dade2") -> None:
-        self._status_label.setStyleSheet(f"color: {color};")
-        self._status_label.setText(text)
-
-    def _confirm(self, path: str) -> None:
-        """Called when a final file path is chosen (by button or browse)."""
-        self.file_path = path
-        self._path_edit.setText(path)
-        self._done_btn.setEnabled(True)
-        self._set_status(f"\u2713  {path}", color="#2ecc71")
-
-    # ------------------------------------------------------------------
-    # Population
-    # ------------------------------------------------------------------
-
-    def _populate(self) -> None:
-        self._clear_btn_area()
-
-        if not self._user_dirs:
-            # ── Case: Steam userdata folder not found ────────────────────
-            self._title_label.setText("Steam userdata folder not found")
-            self._sub_label.setText(
-                "Browse for an existing shortcuts.vdf manually:\n"
-                "(Steam\\userdata\\<SteamID>\\config\\shortcuts.vdf)"
-            )
-            return
-
-        existing_set = set(self._existing)  # for O(1) lookup
-
-        if len(self._user_dirs) == 1:
-            udir = self._user_dirs[0]
-            vdf_path = str(udir / "config" / "shortcuts.vdf")
-            if vdf_path in existing_set:
-                # ── Single user, already has vdf ─────────────────────────
-                # Handled by main() without showing this dialog at all,
-                # but guard here just in case.
-                self._title_label.setText("shortcuts.vdf found")
-                self._sub_label.setText(
-                    f"Found shortcuts.vdf for Steam ID {udir.name}.\n"
-                    "Click Done to continue, or browse for a different file."
-                )
-                self._confirm(vdf_path)
-            else:
-                # ── Single user, no vdf → auto-create silently ───────────
-                self._title_label.setText("No shortcuts.vdf found")
-                self._sub_label.setText(
-                    f"Creating shortcuts.vdf for Steam ID {udir.name}..."
-                )
-                try:
-                    create_empty_shortcuts_vdf(vdf_path)
-                    self._confirm(vdf_path)
-                    self._sub_label.setText(
-                        f"shortcuts.vdf created for Steam ID {udir.name}.\n"
-                        "Click Done to continue."
-                    )
-                except Exception as exc:
-                    self._set_status(f"Error: {exc}", color="#e74c3c")
-            return
-
-        # ── Multiple user dirs: always show all of them ──────────────────
-        has_any_vdf = bool(self._existing)
-        if has_any_vdf:
-            self._title_label.setText("Select a Steam account")
-            self._sub_label.setText(
-                "Multiple Steam accounts found.\n"
-                "Choose which one to use  (\u2713 = has shortcuts.vdf,  \u2717 = will be created):"
-            )
-        else:
-            self._title_label.setText("No shortcuts.vdf found")
-            self._sub_label.setText(
-                "Multiple Steam accounts found.\n"
-                "Choose which account to create shortcuts.vdf for:"
-            )
-
-        for udir in self._user_dirs:
-            steam_id  = udir.name
-            vdf_path  = str(udir / "config" / "shortcuts.vdf")
-            has_vdf   = vdf_path in existing_set
-            marker    = "\u2713  has shortcuts.vdf" if has_vdf else "\u2717  no shortcuts.vdf"
-            label     = f"Steam ID  {steam_id}   |   {marker}"
-            btn = QPushButton(label)
-            btn.setCursor(Qt.PointingHandCursor)
-            if has_vdf:
-                captured_path = vdf_path
-                btn.clicked.connect(
-                    lambda checked=False, p=captured_path: self._select_existing(p)
-                )
-            else:
-                captured_dir = udir
-                btn.clicked.connect(
-                    lambda checked=False, d=captured_dir: self._create_for(d)
-                )
-            self._btn_area.addWidget(btn)
-
-    # ------------------------------------------------------------------
-    # Button actions
-    # ------------------------------------------------------------------
-
-    def _create_for(self, user_dir: Path) -> None:
-        target = str(user_dir / "config" / "shortcuts.vdf")
-        try:
-            create_empty_shortcuts_vdf(target)
-            self._confirm(target)
-            self._sub_label.setText(
-                f"shortcuts.vdf created for Steam ID {user_dir.name}.\n"
-                "Click Done to continue."
-            )
-            # Disable all account buttons so the choice is locked in
-            for i in range(self._btn_area.count()):
-                w = self._btn_area.itemAt(i).widget()
-                if w:
-                    w.setEnabled(False)
-        except Exception as exc:
-            self._set_status(f"Error: {exc}", color="#e74c3c")
-
-    def _select_existing(self, vdf_path: str) -> None:
-        """Use an existing shortcuts.vdf chosen via an account button."""
-        self._confirm(vdf_path)
-        # Disable the other account buttons
-        for i in range(self._btn_area.count()):
-            w = self._btn_area.itemAt(i).widget()
-            if w:
-                w.setEnabled(False)
-
-    def _browse(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select shortcuts.vdf", "", "VDF files (*.vdf)"
+        buttons_row = QHBoxLayout()
+        buttons_row.setSpacing(30)
+        buttons_row.addStretch(1)
+        buttons_row.addLayout(
+            self._build_action_column("+", "Add another", self.add_another_requested.emit)
         )
-        if file_path:
-            self._confirm(file_path)
+        buttons_row.addLayout(
+            self._build_action_column("\u21bb", "Restart Steam", self.restart_requested.emit)
+        )
+        buttons_row.addLayout(
+            self._build_action_column("\u2715", "Quit", self.quit_requested.emit)
+        )
+        buttons_row.addStretch(1)
+        root.addLayout(buttons_row)
 
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        fit_and_center(self)
+        root.addStretch(1)
 
+    def _build_action_column(self, symbol: str, caption_text: str, callback) -> QVBoxLayout:
+        column = QVBoxLayout()
+        column.setSpacing(8)
+        column.setAlignment(Qt.AlignHCenter)
 
-class ShortcutsEmptyDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(WINDOW_TITLE)
+        button = QPushButton(symbol)
+        button.setFixedSize(self.ACTION_BUTTON_SIZE, self.ACTION_BUTTON_SIZE)
+        symbol_font = QFont()
+        symbol_font.setPointSize(26)
+        symbol_font.setBold(True)
+        button.setFont(symbol_font)
+        style_primary(button, radius=16)
+        button.clicked.connect(callback)
+        column.addWidget(button, alignment=Qt.AlignHCenter)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(10)
-        layout.setAlignment(Qt.AlignCenter)
+        caption = QLabel(caption_text)
+        caption.setAlignment(Qt.AlignCenter)
+        column.addWidget(caption, alignment=Qt.AlignHCenter)
 
-        msg_label = QLabel("shortcuts.vdf is empty or cannot be read")
-        msg_label.setAlignment(Qt.AlignCenter)
-        
-        ok_button = QPushButton("Quit")
-        ok_button.clicked.connect(self.accept)
-        
-        layout.addWidget(msg_label)
-        layout.addWidget(ok_button, alignment=Qt.AlignCenter)
+        return column
 
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        fit_and_center(self)
+    def set_backup_path(self, directory: str) -> None:
+        self._backup_label.setText(f"Backup of shortcuts.vdf saved in:\n{directory}")
 
 
 class WizardController:
-    PAGE_GAME_INFO = 0
-    PAGE_ARTWORK   = 1
+    PAGE_SHORTCUTS = 0
+    PAGE_GAME_INFO = 1
+    PAGE_ARTWORK   = 2
+    PAGE_DONE      = 3
 
-    def __init__(self) -> None:
+    def __init__(self, existing_vdfs: list[str], user_dirs: list[Path]) -> None:
         self.entry = GameEntry()
 
+        self.shortcuts_page   = ShortcutsPage(existing_vdfs, user_dirs)
         self.game_info_window = GameInfoWindow(self.entry)
         self.artwork_window   = ArtworkWindow(self.entry)
+        self.done_page        = DonePage()
 
-        # Size both pages to match ArtworkWindow so the window never resizes.
-        self.artwork_window.layout().activate()
-        artwork_size = self.artwork_window.sizeHint()
-        self.game_info_window.set_forced_size(artwork_size)
+        # Silently skip straight past the picker when there's exactly one
+        # unambiguous Steam account to use (same shortcut the old startup
+        # flow took) - the page is still built underneath in case the user
+        # hits "Back" and wants to change their mind.
+        self._auto_confirm_path: str | None = None
+        if len(existing_vdfs) == 1 and len(user_dirs) == 1:
+            self._auto_confirm_path = existing_vdfs[0]
 
         self._host = QWidget()
         self._host.setWindowTitle(WINDOW_TITLE)
@@ -896,17 +1005,34 @@ class WizardController:
         host_layout.setSpacing(0)
 
         self._stack = QStackedWidget()
-        self._stack.addWidget(self.game_info_window)  # PAGE_GAME_INFO = 0
-        self._stack.addWidget(self.artwork_window)    # PAGE_ARTWORK   = 1
+        self._stack.addWidget(self.shortcuts_page)    # PAGE_SHORTCUTS = 0
+        self._stack.addWidget(self.game_info_window)  # PAGE_GAME_INFO = 1
+        self._stack.addWidget(self.artwork_window)    # PAGE_ARTWORK   = 2
+        self._stack.addWidget(self.done_page)          # PAGE_DONE      = 3
         host_layout.addWidget(self._stack)
 
+        # Size every page to match ArtworkWindow so the window never resizes
+        # or pops in and out - it's one window from start to finish.
+        self.artwork_window.layout().activate()
+        artwork_size = self.artwork_window.sizeHint()
         self._host.setFixedSize(artwork_size)
 
+        self.shortcuts_page.next_requested.connect(self._on_shortcuts_confirmed)
+
+        self.game_info_window.back_requested.connect(self._go_to_shortcuts)
         self.game_info_window.next_requested.connect(self._go_to_artwork)
+
         self.artwork_window.back_requested.connect(self._go_to_game_info)
         self.artwork_window.add_requested.connect(self._on_add_clicked)
 
+        self.done_page.add_another_requested.connect(self._on_add_another)
+        self.done_page.restart_requested.connect(self._on_restart)
+        self.done_page.quit_requested.connect(QApplication.instance().quit)
+
     def start(self) -> None:
+        if self._auto_confirm_path:
+            self._on_shortcuts_confirmed(self._auto_confirm_path)
+
         screen = QApplication.primaryScreen()
         if screen is not None:
             ag = screen.availableGeometry()
@@ -916,14 +1042,53 @@ class WizardController:
             )
         self._host.show()
 
+    def _go_to_shortcuts(self) -> None:
+        self._stack.setCurrentIndex(self.PAGE_SHORTCUTS)
+
     def _go_to_artwork(self) -> None:
         self._stack.setCurrentIndex(self.PAGE_ARTWORK)
 
     def _go_to_game_info(self) -> None:
         self._stack.setCurrentIndex(self.PAGE_GAME_INFO)
 
+    def _on_shortcuts_confirmed(self, chosen_path: str) -> None:
+        # Normalise path separators
+        chosen_path = chosen_path.replace("/", "\\")
+
+        if not chosen_path or not os.path.isfile(chosen_path):
+            self.shortcuts_page.show_error("Selected file no longer exists.")
+            return
+
+        # Validate the chosen file
+        is_valid = False
+        try:
+            with open(chosen_path, "rb") as f:
+                root = vdf.binary_load(f)
+                # Accept file as long as the 'shortcuts' key is present,
+                # even when it contains zero entries (freshly-created file).
+                if 'shortcuts' in root:
+                    is_valid = True
+        except Exception:
+            pass
+
+        if not is_valid:
+            self.shortcuts_page.show_error("shortcuts.vdf is empty or cannot be read.")
+            return
+
+        global STEAM_SHORTCUTS_FILE_PATH, STEAM_SHORTCUTS_DIRECTORY, STEAM_GRID_DIRECTORY
+        STEAM_SHORTCUTS_FILE_PATH = chosen_path
+        STEAM_SHORTCUTS_DIRECTORY = os.path.dirname(chosen_path) + "\\"
+
+        # Grid folder lives INSIDE the config folder: userdata/<id>/config/grid
+        # Only created if it doesn't already exist.
+        grid_dir = Path(chosen_path).parent / "grid"
+        os.makedirs(str(grid_dir), exist_ok=True)
+        STEAM_GRID_DIRECTORY = str(grid_dir)
+
+        self._stack.setCurrentIndex(self.PAGE_GAME_INFO)
+
     def _on_add_clicked(self) -> None:
-        # TODO: call your Main.py logic here before showing the popup.
+        # TODO: call your Main.py logic here before showing the done page.
         # All user input is in self.entry:
         #   self.entry.game_name, emulator_path, game_path
         #   self.entry.icon_path, hero_path, grid_path, logo_path, preview_path
@@ -950,7 +1115,7 @@ class WizardController:
         emulator_start_in_path = Path(self.entry.emulator_path)
         emulator_start_in_path = str(emulator_start_in_path.parent)
 
-        
+
         # Adding Game Art
         if self.entry.grid_path and not os.path.exists(f"{STEAM_GRID_DIRECTORY}\\{art_id}p.png"):
             shutil.copy(self.entry.grid_path, STEAM_GRID_DIRECTORY)
@@ -1001,83 +1166,36 @@ class WizardController:
 
 
         ####################################
-        
-        done_popup = DonePopup(self._host)
-        done_popup.exec()
 
-        if done_popup.choice == DonePopup.ADD_ANOTHER:
-            self.entry.reset()
-            self.game_info_window.load_from_entry()
-            self.artwork_window.reset_images()
-            self._stack.setCurrentIndex(self.PAGE_GAME_INFO)
-        # On "quit" the popup closes and the main window stays open.
-        # Uncomment below to quit the app immediately instead:
-        else:
-            QApplication.instance().quit()
+        self.done_page.set_backup_path(os.path.abspath(SHORTCUTS_BACKUP_DIRECTORY))
+        self._stack.setCurrentIndex(self.PAGE_DONE)
+
+    def _on_add_another(self) -> None:
+        self.entry.reset()
+        self.game_info_window.load_from_entry()
+        self.artwork_window.reset_images()
+        self._stack.setCurrentIndex(self.PAGE_GAME_INFO)
+
+    def _on_restart(self) -> None:
+        restart_steam()
+        QApplication.instance().quit()
 
 
 def main() -> None:
     app = QApplication(sys.argv)
-    
+
     if hasattr(sys, '_MEIPASS'):
         base_path = sys._MEIPASS
     else:
         base_path = os.path.dirname(os.path.abspath(__file__))
-        
+
     icon_path = os.path.join(base_path, "icon.ico")
     app.setWindowIcon(QIcon(icon_path))
-
-    global STEAM_SHORTCUTS_FILE_PATH, STEAM_SHORTCUTS_DIRECTORY, STEAM_GRID_DIRECTORY
 
     # ── Discover what's already on disk ──────────────────────────────────
     existing_vdfs, user_dirs = discover_steam_state()
 
-    chosen_path: str = ""
-
-    if len(existing_vdfs) == 1 and len(user_dirs) == 1:
-        # Exactly one user with an existing vdf → use it silently
-        chosen_path = existing_vdfs[0]
-    else:
-        # Any other combination → show the picker
-        picker = ShortcutsPickerDialog(existing_vdfs, user_dirs)
-        if picker.exec() != QDialog.Accepted:
-            sys.exit(0)
-        chosen_path = picker.file_path
-
-    # Normalise path separators
-    chosen_path = chosen_path.replace("/", "\\")
-
-    if not chosen_path or not os.path.isfile(chosen_path):
-        sys.exit(0)
-
-    # ── Set the three runtime globals from the chosen file ───────────────
-    STEAM_SHORTCUTS_FILE_PATH = chosen_path
-    STEAM_SHORTCUTS_DIRECTORY = os.path.dirname(chosen_path) + "\\"
-
-    # Grid folder lives INSIDE the config folder: userdata/<id>/config/grid
-    # Only created if it doesn't already exist.
-    grid_dir = Path(chosen_path).parent / "grid"
-    os.makedirs(str(grid_dir), exist_ok=True)
-    STEAM_GRID_DIRECTORY = str(grid_dir)
-
-    # ── Validate the chosen file ─────────────────────────────────────────
-    is_valid = False
-    try:
-        with open(STEAM_SHORTCUTS_FILE_PATH, "rb") as f:
-            root = vdf.binary_load(f)
-            # Accept file as long as the 'shortcuts' key is present,
-            # even when it contains zero entries (freshly-created file).
-            if 'shortcuts' in root:
-                is_valid = True
-    except Exception:
-        pass
-
-    if not is_valid:
-        empty_dialog = ShortcutsEmptyDialog()
-        empty_dialog.exec()
-        sys.exit(0)
-
-    controller = WizardController()
+    controller = WizardController(existing_vdfs, user_dirs)
     controller.start()
 
     sys.exit(app.exec())
