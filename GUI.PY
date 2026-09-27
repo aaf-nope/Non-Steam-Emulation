@@ -60,6 +60,7 @@ POPUP_SIZE = QSize(450, 220)
 
 STEAM_USERDATA = Path("C:\\Program Files (x86)\\Steam\\userdata")
 
+shortcuts_file_path = ""
 for file_path in STEAM_USERDATA.rglob("shortcuts.vdf"):
     file_path = str(file_path)
     path = file_path.split("\\")
@@ -67,10 +68,22 @@ for file_path in STEAM_USERDATA.rglob("shortcuts.vdf"):
         if ".vdf" in part:
             path.pop()
     shortcuts_file_path = "\\".join(path) + "\\"
+
+if not shortcuts_file_path and STEAM_USERDATA.exists():
+    for user_dir in STEAM_USERDATA.iterdir():
+        if user_dir.is_dir() and user_dir.name not in ("0", "ac", "anonymous"):
+            config_dir = user_dir / "config"
+            shortcuts_file_path = str(config_dir) + "\\"
+            break
+
 STEAM_SHORTCUTS_DIRECTORY = shortcuts_file_path
 
+STEAM_GRID_DIRECTORY = ""
 for file_path in STEAM_USERDATA.rglob("grid"):
     STEAM_GRID_DIRECTORY = str(file_path)
+
+if not STEAM_GRID_DIRECTORY and STEAM_SHORTCUTS_DIRECTORY:
+    STEAM_GRID_DIRECTORY = str(Path(STEAM_SHORTCUTS_DIRECTORY).parent / "grid")
 
 SHORTCUTS_BACKUP_DIRECTORY = "shortcuts_file_backups"
 
@@ -583,6 +596,78 @@ class DonePopup(QDialog):
         fit_and_center(self, POPUP_SIZE)
 
 
+class ShortcutsNotFoundDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(WINDOW_TITLE)
+        self.file_path = ""
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignCenter)
+
+        msg_label = QLabel("shortcuts.vdf was not found\nplease input the location of shortcuts.vdf\n(C:\\Program Files (x86)\\Steam\\userdata\\<SteamID>\\config)\\")
+        msg_label.setAlignment(Qt.AlignCenter)
+        
+        
+        row_layout = QHBoxLayout()
+        self.path_edit = QLineEdit()
+        self.path_edit.setReadOnly(True)
+        self.path_edit.setFixedWidth(300)
+        
+        browse_button = QPushButton("browse")
+        browse_button.clicked.connect(self._browse)
+        
+        row_layout.addWidget(self.path_edit)
+        row_layout.addWidget(browse_button)
+        
+        self.done_button = QPushButton("Done")
+        self.done_button.setEnabled(False)
+        self.done_button.clicked.connect(self.accept)
+        
+        layout.addWidget(msg_label)
+        layout.addLayout(row_layout)
+        layout.addWidget(self.done_button, alignment=Qt.AlignCenter)
+
+    def _browse(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select shortcuts.vdf", "", "VDF files (*.vdf)"
+        )
+        if file_path:
+            self.file_path = file_path
+            self.path_edit.setText(file_path)
+            self.done_button.setEnabled(True)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        fit_and_center(self)
+
+
+class ShortcutsEmptyDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(WINDOW_TITLE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(10)
+        layout.setAlignment(Qt.AlignCenter)
+
+        msg_label = QLabel("shortcuts.vdf is empty or cannot be read")
+        msg_label.setAlignment(Qt.AlignCenter)
+        
+        ok_button = QPushButton("Quit")
+        ok_button.clicked.connect(self.accept)
+        
+        layout.addWidget(msg_label)
+        layout.addWidget(ok_button, alignment=Qt.AlignCenter)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        fit_and_center(self)
+
+
 class WizardController:
     PAGE_GAME_INFO = 0
     PAGE_ARTWORK   = 1
@@ -641,11 +726,12 @@ class WizardController:
 
 
         #create shortcuts.vdf backup just in case
-        os.makedirs(SHORTCUTS_BACKUP_DIRECTORY, exist_ok=True)
-        shutil.copy(f"{STEAM_SHORTCUTS_DIRECTORY}\\shortcuts.vdf", SHORTCUTS_BACKUP_DIRECTORY)
-        now = datetime.now()
-        now = now.strftime("%Y-%m-%d-%H%M%S")
-        os.rename(f"{SHORTCUTS_BACKUP_DIRECTORY}\\shortcuts.vdf", f"{SHORTCUTS_BACKUP_DIRECTORY}\\shortcuts_backup_{now}.vdf")
+        if os.path.exists(STEAM_SHORTCUTS_FILE_PATH):
+            os.makedirs(SHORTCUTS_BACKUP_DIRECTORY, exist_ok=True)
+            shutil.copy(STEAM_SHORTCUTS_FILE_PATH, SHORTCUTS_BACKUP_DIRECTORY)
+            now = datetime.now()
+            now = now.strftime("%Y-%m-%d-%H%M%S")
+            os.rename(f"{SHORTCUTS_BACKUP_DIRECTORY}\\shortcuts.vdf", f"{SHORTCUTS_BACKUP_DIRECTORY}\\shortcuts_backup_{now}.vdf")
 
 
         #calculate appid and artid(game art)
@@ -734,6 +820,37 @@ def main() -> None:
         
     icon_path = os.path.join(base_path, "icon.ico")
     app.setWindowIcon(QIcon(icon_path))
+
+    global STEAM_SHORTCUTS_FILE_PATH, STEAM_SHORTCUTS_DIRECTORY, STEAM_GRID_DIRECTORY
+
+    if not STEAM_SHORTCUTS_FILE_PATH or not os.path.exists(STEAM_SHORTCUTS_FILE_PATH) or not os.path.isfile(STEAM_SHORTCUTS_FILE_PATH):
+        not_found_dialog = ShortcutsNotFoundDialog()
+        if not_found_dialog.exec() == QDialog.Accepted:
+            new_path = not_found_dialog.file_path
+            if new_path and os.path.exists(new_path) and new_path.lower().endswith(".vdf"):
+                new_path = new_path.replace("/", "\\")
+                STEAM_SHORTCUTS_FILE_PATH = new_path
+                new_dir = os.path.dirname(new_path) + "\\"
+                STEAM_SHORTCUTS_DIRECTORY = new_dir
+                if not STEAM_GRID_DIRECTORY:
+                    STEAM_GRID_DIRECTORY = str(Path(new_dir).parent / "grid")
+        else:
+            sys.exit(0)
+
+    is_valid = False
+    if STEAM_SHORTCUTS_FILE_PATH and os.path.exists(STEAM_SHORTCUTS_FILE_PATH) and os.path.isfile(STEAM_SHORTCUTS_FILE_PATH):
+        try:
+            with open(STEAM_SHORTCUTS_FILE_PATH, "rb") as f:
+                root = vdf.binary_load(f)
+                if root.get('shortcuts') and len(root['shortcuts']) > 0:
+                    is_valid = True
+        except Exception:
+            pass
+
+    if not is_valid:
+        empty_dialog = ShortcutsEmptyDialog()
+        empty_dialog.exec()
+        sys.exit(0)
 
     controller = WizardController()
     controller.start()
