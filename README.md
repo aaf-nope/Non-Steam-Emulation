@@ -1,6 +1,6 @@
 # Non-Steam-Emulation
 
-A small Windows utility for adding emulated games to Steam as non-Steam games without manually editing Steam shortcut files.
+A small Windows utility for adding emulated games to Steam as non-Steam games without manually doing so.
 
 I built this project to solve a problem I kept running into myself: adding emulated games to Steam required repeatedly dealing with emulator launch commands.
 
@@ -217,6 +217,7 @@ The project was developed using a combination of official documentation, Python 
 - I also used [Reddit](https://www.reddit.com/) and [Stack Overflow](https://stackoverflow.com/questions) for minor issues and problems
 
 ## AI Assistance
+### This disclosure is included so that the development process and use of AI are transparent.
 
 The application itself was developed by me, including the core Python logic, Steam integration, file handling, App ID generation, project structure, testing, and debugging.
 
@@ -238,6 +239,5 @@ In short:
 - **Testing and debugging:** done by me
 
 
-This project was also a personal challenge to myself. I intentionally avoided using AI to write the core Python code and logic because I wanted to prove to myself that I could take a problem, research it, work through the implementation, debug it, and build a functional Python application entirely on my own. I fully recognize that using AI during development is normal and can be extremely useful, hell I even used ai while working on this README, and I could have relied on it much more heavily to make the project easier or faster. Instead, I chose to treat this project as a test of my own programming ability and problem solving skills. The result is something I can genuinely say I understand and built myself.
+This project was also a personal challenge to myself. I intentionally avoided using AI to write the core Python code and logic because I wanted to prove to myself that I could take a problem, research it, work through the implementation, debug it, and build a functional Python application entirely on my own. I fully recognize that using AI during development is normal and can be extremely useful, hell I even used ai while writing this very README, and I could have relied on it much more heavily to make the project easier or faster. Instead, I chose to treat this project as a test of my own programming ability and problem solving skills. The result is something I can genuinely say I understand and built myself.
 
-### This disclosure is included so that the development process and use of AI are transparent.
