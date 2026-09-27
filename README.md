@@ -1,10 +1,8 @@
 # Non-Steam-Emulation
 
-A small Windows utility for adding emulated games to Steam as non-Steam games without manually doing so.
+A small Windows utility for adding emulated games to Steam as non-Steam games.
 
-I built this project to solve a problem I kept running into myself: adding emulated games to Steam required repeatedly dealing with emulator launch commands.
-
-What started as a simple Python script eventually became a complete GUI application.
+I built this project to solve a problem I kept running into: adding emulated games to Steam required repeatedly dealing with emulator launch commands by hand. What started as a simple Python script eventually became a complete GUI application.
 
 ## Screenshots
 
@@ -18,6 +16,8 @@ What started as a simple Python script eventually became a complete GUI applicat
 - Calculate the Steam App ID used by the shortcut
 - Add and modify entries in Steam's `shortcuts.vdf`
 - Automatically back up `shortcuts.vdf` before making changes
+- If `shortcuts.vdf` can't be found automatically, prompts you to manually enter its location
+- Detects a corrupted or empty `shortcuts.vdf` and warns you instead of failing silently
 - Add Steam library artwork, including:
   - Grid
   - Hero
@@ -29,14 +29,10 @@ What started as a simple Python script eventually became a complete GUI applicat
 
 ## How It Works
 
-The application works with Steam's Windows userdata structure.
-
-The main files involved are:
+The application works with Steam's Windows userdata structure:
 
 ```text
 C:\Program Files (x86)\Steam\userdata\<SteamID>\config\shortcuts.vdf
-```
-```text
 C:\Program Files (x86)\Steam\userdata\<SteamID>\config\grid\
 ```
 
@@ -52,10 +48,11 @@ It then:
 1. Builds the emulator launch command.
 2. Calculates the App ID used for the Steam shortcut.
 3. Copies the selected artwork into Steam's `grid` directory using the appropriate naming format.
-4. Loads `shortcuts.vdf` as structured data using the Python `vdf` package.
-5. Adds the new game to the existing `shortcuts` data.
-6. Creates a backup of the original `shortcuts.vdf`.
-7. Writes the updated data back to the file.
+4. Locates `shortcuts.vdf` automatically, or prompts for its location if it can't be found and checks that the file isn't corrupted or empty before proceeding.
+5. Loads `shortcuts.vdf` as structured data using the Python `vdf` package.
+6. Adds the new game to the existing `shortcuts` data.
+7. Creates a backup of the original `shortcuts.vdf`.
+8. Writes the updated data back to the file.
 
 Rather than manipulating `shortcuts.vdf` as raw text, the application treats it as structured Valve KeyValues data. This was one of the important changes during development and made modifying existing shortcuts considerably more predictable.
 
@@ -95,6 +92,7 @@ No Python installation is required for the packaged version.
 ```powershell
 python GUI.py
 ```
+
 > **Important:** Steam should be closed while the application modifies `shortcuts.vdf`.
 
 ## Project Structure
@@ -105,7 +103,6 @@ Non-Steam-Emulation/
 ├── GUI.py
 ├── README.md
 ├── icon.ico
-├── sources.md
 ├── .gitignore
 │
 ├── Screenshots/
@@ -121,7 +118,7 @@ Non-Steam-Emulation/
 
 `GUI.py` contains the current application source code.
 
-The `LegacyScripts` directory contains earlier versions and experiments from the development process. They are kept in the repository to preserve the project's evolution from the original scripts into the final GUI application.
+The `LegacyScripts` directory contains earlier versions and experiments from the development process. They're kept in the repository to preserve the project's evolution from the original scripts into the final GUI application.
 
 ## Development
 
@@ -129,11 +126,9 @@ The project developed through several stages.
 
 It originally started as a simple script for experimenting with Steam's non-Steam shortcut format. As I learned more about how `shortcuts.vdf` worked, the implementation evolved into a more structured approach using the Python `vdf` package.
 
-One of the important changes was moving away from treating `shortcuts.vdf` as raw text and instead loading it as structured data. This made it possible to modify the existing shortcut information without relying on fragile string manipulation.
+One of the important changes was moving away from treating `shortcuts.vdf` as raw text and instead loading it as structured data. This made it possible to modify existing shortcut information without relying on fragile string manipulation.
 
-The project then evolved from command-line experimentation into the current PySide6 GUI application.
-
-The repository history contains the intermediate versions and experiments that led to the final implementation.
+The project then evolved from command-line experimentation into the current PySide6 GUI application. The repository history contains the intermediate versions and experiments that led to the final implementation.
 
 ## UI Design
 
@@ -157,8 +152,8 @@ Testing focused on:
 - Preserving existing Steam shortcut data
 - Creating backups before modifying the shortcut file
 - Copying artwork into the correct Steam directories
+- Handling missing, corrupted, or empty `shortcuts.vdf` files
 - Handling the complete workflow through the GUI
-
 
 ## Limitations
 
@@ -167,6 +162,14 @@ Testing focused on:
 - Designed around the standard Steam Windows userdata structure
 - Steam should be closed while `shortcuts.vdf` is being modified
 - The application focuses specifically on adding emulated games as Steam non-Steam shortcuts
+
+## Planned Features
+
+Things I'm planning to add going forward:
+
+- Automatically fetching artwork for games instead of requiring manual selection
+- Support for custom launch options per shortcut
+- A button to restart Steam automatically, so you won't need to manually close it before editing and reopen it afterward
 
 ## References
 
@@ -192,6 +195,7 @@ The project was developed using a combination of official documentation, Python 
 - I also used [Reddit](https://www.reddit.com/) and [Stack Overflow](https://stackoverflow.com/questions) for minor issues and problems
 
 ## AI Assistance
+
 ### This disclosure is included so that the development process and use of AI are transparent.
 
 The application itself was developed by me, including the core Python logic, Steam integration, file handling, App ID generation, project structure, testing, and debugging.
@@ -213,6 +217,4 @@ In short:
 - **GUI integration:** done by me
 - **Testing and debugging:** done by me
 
-
-This project was also a personal challenge to myself. I intentionally avoided using AI to write the core Python code and logic because I wanted to prove to myself that I could take a problem, research it, work through the implementation, debug it, and build a functional Python application entirely on my own. I fully recognize that using AI during development is normal and can be extremely useful, hell I even used ai while writing this very README, and I could have relied on it much more heavily to make the project easier or faster. Instead, I chose to treat this project as a test of my own programming ability and problem solving skills. The result is something I can genuinely say I understand and built myself.
-
+This project was also a personal challenge to myself. I intentionally avoided using AI to write the core Python code and logic because I wanted to prove to myself that I could take a problem, research it, work through the implementation, debug it, and build a functional Python application entirely on my own. I fully recognize that using AI during development is normal and can be extremely useful, hell I even used AI while writing this very README, and I could have relied on it much more heavily to make the project easier or faster. Instead, I chose to treat this project as a test of my own programming ability and problem-solving skills. The result is something I can genuinely say I understand and built myself.
