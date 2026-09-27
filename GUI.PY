@@ -60,37 +60,58 @@ POPUP_SIZE = QSize(450, 220)
 
 STEAM_USERDATA = Path("C:\\Program Files (x86)\\Steam\\userdata")
 
-shortcuts_file_path = ""
-for file_path in STEAM_USERDATA.rglob("shortcuts.vdf"):
-    file_path = str(file_path)
-    path = file_path.split("\\")
-    for part in path:
-        if ".vdf" in part:
-            path.pop()
-    shortcuts_file_path = "\\".join(path) + "\\"
-
-if not shortcuts_file_path and STEAM_USERDATA.exists():
-    for user_dir in STEAM_USERDATA.iterdir():
-        if user_dir.is_dir() and user_dir.name not in ("0", "ac", "anonymous"):
-            config_dir = user_dir / "config"
-            shortcuts_file_path = str(config_dir) + "\\"
-            break
-
-STEAM_SHORTCUTS_DIRECTORY = shortcuts_file_path
-
-STEAM_GRID_DIRECTORY = ""
-for file_path in STEAM_USERDATA.rglob("grid"):
-    STEAM_GRID_DIRECTORY = str(file_path)
-
-if not STEAM_GRID_DIRECTORY and STEAM_SHORTCUTS_DIRECTORY:
-    STEAM_GRID_DIRECTORY = str(Path(STEAM_SHORTCUTS_DIRECTORY).parent / "grid")
-
 SHORTCUTS_BACKUP_DIRECTORY = "shortcuts_file_backups"
 
-STEAM_SHORTCUTS_FILE_PATH = f"{STEAM_SHORTCUTS_DIRECTORY}\\shortcuts.vdf"
+# These are set at runtime by main() after the user picks a file / folder.
+STEAM_SHORTCUTS_FILE_PATH  = ""
+STEAM_SHORTCUTS_DIRECTORY  = ""
+STEAM_GRID_DIRECTORY       = ""
+
+
+def _is_real_user_dir(d: Path) -> bool:
+    """Return True when *d* looks like a proper Steam account folder."""
+    return d.is_dir() and d.name.isdigit() and d.name not in ("0",)
+
+
+def discover_steam_state() -> tuple[list[str], list[Path]]:
+    r"""Scan userdata\ and return (existing_vdf_paths, valid_user_dirs).
+
+    existing_vdf_paths - every shortcuts.vdf already present on disk.
+    valid_user_dirs    - every userdata\<id> folder (whether or not it has
+                         a shortcuts.vdf yet).
+    """
+    existing: list[str] = []
+    user_dirs: list[Path] = []
+
+    if not STEAM_USERDATA.exists():
+        return existing, user_dirs
+
+    for entry in sorted(STEAM_USERDATA.iterdir()):
+        if not _is_real_user_dir(entry):
+            continue
+        user_dirs.append(entry)
+        vdf_path = entry / "config" / "shortcuts.vdf"
+        if vdf_path.is_file():
+            existing.append(str(vdf_path))
+
+    return existing, user_dirs
 
 
 ####################################
+
+
+def create_empty_shortcuts_vdf(file_path: str) -> None:
+    """Write a minimal, valid binary shortcuts.vdf to *file_path*.
+
+    The structure mirrors the real format Steam uses:
+        shortcuts -> (empty dict)
+    """
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    empty_root = vdf.VDFDict()
+    empty_root["shortcuts"] = vdf.VDFDict()
+    with open(file_path, "wb") as f:
+        vdf.binary_dump(empty_root, f)
+
 
 def fit_and_center(window: QWidget, fixed_size: QSize | None = None) -> None:
     window.setFixedSize(fixed_size if fixed_size is not None else window.sizeHint())
@@ -596,48 +617,233 @@ class DonePopup(QDialog):
         fit_and_center(self, POPUP_SIZE)
 
 
-class ShortcutsNotFoundDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None) -> None:
+class ShortcutsPickerDialog(QDialog):
+    """Single dialog that handles every shortcuts.vdf startup scenario:
+
+    • existing_vdfs has items  → show one button per vdf (pick which user)
+    • existing_vdfs is empty,
+      user_dirs has one entry  → auto-create immediately (no buttons needed)
+    • existing_vdfs is empty,
+      user_dirs has many entries → show one button per user dir to create in
+    • no userdata folder at all → show manual Browse fallback
+
+    No pop-ups open; all feedback happens via the status label inside the
+    dialog itself.
+    """
+
+    def __init__(
+        self,
+        existing_vdfs: list[str],
+        user_dirs: list[Path],
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(WINDOW_TITLE)
-        self.file_path = ""
+        self.file_path = ""  # result written here before accept()
+        self._existing = existing_vdfs
+        self._user_dirs = user_dirs
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(10)
-        layout.setAlignment(Qt.AlignCenter)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 24, 28, 24)
+        outer.setSpacing(12)
+        outer.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
-        msg_label = QLabel("shortcuts.vdf was not found\nplease input the location of shortcuts.vdf\n(C:\\Program Files (x86)\\Steam\\userdata\\<SteamID>\\config)\\")
-        msg_label.setAlignment(Qt.AlignCenter)
-        
-        
-        row_layout = QHBoxLayout()
-        self.path_edit = QLineEdit()
-        self.path_edit.setReadOnly(True)
-        self.path_edit.setFixedWidth(300)
-        
-        browse_button = QPushButton("browse")
-        browse_button.clicked.connect(self._browse)
-        
-        row_layout.addWidget(self.path_edit)
-        row_layout.addWidget(browse_button)
-        
-        self.done_button = QPushButton("Done")
-        self.done_button.setEnabled(False)
-        self.done_button.clicked.connect(self.accept)
-        
-        layout.addWidget(msg_label)
-        layout.addLayout(row_layout)
-        layout.addWidget(self.done_button, alignment=Qt.AlignCenter)
+        # --- title -------------------------------------------------------
+        self._title_label = QLabel()
+        self._title_label.setAlignment(Qt.AlignCenter)
+        title_font = QFont()
+        title_font.setPointSize(11)
+        title_font.setBold(True)
+        self._title_label.setFont(title_font)
+        outer.addWidget(self._title_label)
+
+        # --- subtitle / instruction --------------------------------------
+        self._sub_label = QLabel()
+        self._sub_label.setAlignment(Qt.AlignCenter)
+        self._sub_label.setWordWrap(True)
+        outer.addWidget(self._sub_label)
+
+        # --- dynamic button area -----------------------------------------
+        self._btn_area = QVBoxLayout()
+        self._btn_area.setSpacing(6)
+        outer.addLayout(self._btn_area)
+
+        # --- status line (replaces pop-ups) ------------------------------
+        self._status_label = QLabel("")
+        self._status_label.setAlignment(Qt.AlignCenter)
+        self._status_label.setStyleSheet("color: #5dade2;")
+        self._status_label.setWordWrap(True)
+        outer.addWidget(self._status_label)
+
+        # --- manual browse row -------------------------------------------
+        browse_row = QHBoxLayout()
+        self._path_edit = QLineEdit()
+        self._path_edit.setReadOnly(True)
+        self._path_edit.setPlaceholderText("or browse for shortcuts.vdf manually...")
+        browse_btn = QPushButton("Browse")
+        browse_btn.setFixedWidth(70)
+        browse_btn.clicked.connect(self._browse)
+        browse_row.addWidget(self._path_edit)
+        browse_row.addWidget(browse_btn)
+        outer.addLayout(browse_row)
+
+        # --- done button -------------------------------------------------
+        self._done_btn = QPushButton("Done")
+        self._done_btn.setEnabled(False)
+        self._done_btn.clicked.connect(self.accept)
+        outer.addWidget(self._done_btn, alignment=Qt.AlignCenter)
+
+        # --- quit button -------------------------------------------------
+        quit_btn = QPushButton("Quit")
+        quit_btn.clicked.connect(self.reject)
+        outer.addWidget(quit_btn, alignment=Qt.AlignCenter)
+
+        # Enforce a consistent minimum width so all scenarios look the same
+        self.setMinimumWidth(640)
+
+        # Build the initial state
+        self._populate()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _clear_btn_area(self) -> None:
+        while self._btn_area.count():
+            item = self._btn_area.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _set_status(self, text: str, color: str = "#5dade2") -> None:
+        self._status_label.setStyleSheet(f"color: {color};")
+        self._status_label.setText(text)
+
+    def _confirm(self, path: str) -> None:
+        """Called when a final file path is chosen (by button or browse)."""
+        self.file_path = path
+        self._path_edit.setText(path)
+        self._done_btn.setEnabled(True)
+        self._set_status(f"\u2713  {path}", color="#2ecc71")
+
+    # ------------------------------------------------------------------
+    # Population
+    # ------------------------------------------------------------------
+
+    def _populate(self) -> None:
+        self._clear_btn_area()
+
+        if not self._user_dirs:
+            # ── Case: Steam userdata folder not found ────────────────────
+            self._title_label.setText("Steam userdata folder not found")
+            self._sub_label.setText(
+                "Browse for an existing shortcuts.vdf manually:\n"
+                "(Steam\\userdata\\<SteamID>\\config\\shortcuts.vdf)"
+            )
+            return
+
+        existing_set = set(self._existing)  # for O(1) lookup
+
+        if len(self._user_dirs) == 1:
+            udir = self._user_dirs[0]
+            vdf_path = str(udir / "config" / "shortcuts.vdf")
+            if vdf_path in existing_set:
+                # ── Single user, already has vdf ─────────────────────────
+                # Handled by main() without showing this dialog at all,
+                # but guard here just in case.
+                self._title_label.setText("shortcuts.vdf found")
+                self._sub_label.setText(
+                    f"Found shortcuts.vdf for Steam ID {udir.name}.\n"
+                    "Click Done to continue, or browse for a different file."
+                )
+                self._confirm(vdf_path)
+            else:
+                # ── Single user, no vdf → auto-create silently ───────────
+                self._title_label.setText("No shortcuts.vdf found")
+                self._sub_label.setText(
+                    f"Creating shortcuts.vdf for Steam ID {udir.name}..."
+                )
+                try:
+                    create_empty_shortcuts_vdf(vdf_path)
+                    self._confirm(vdf_path)
+                    self._sub_label.setText(
+                        f"shortcuts.vdf created for Steam ID {udir.name}.\n"
+                        "Click Done to continue."
+                    )
+                except Exception as exc:
+                    self._set_status(f"Error: {exc}", color="#e74c3c")
+            return
+
+        # ── Multiple user dirs: always show all of them ──────────────────
+        has_any_vdf = bool(self._existing)
+        if has_any_vdf:
+            self._title_label.setText("Select a Steam account")
+            self._sub_label.setText(
+                "Multiple Steam accounts found.\n"
+                "Choose which one to use  (\u2713 = has shortcuts.vdf,  \u2717 = will be created):"
+            )
+        else:
+            self._title_label.setText("No shortcuts.vdf found")
+            self._sub_label.setText(
+                "Multiple Steam accounts found.\n"
+                "Choose which account to create shortcuts.vdf for:"
+            )
+
+        for udir in self._user_dirs:
+            steam_id  = udir.name
+            vdf_path  = str(udir / "config" / "shortcuts.vdf")
+            has_vdf   = vdf_path in existing_set
+            marker    = "\u2713  has shortcuts.vdf" if has_vdf else "\u2717  no shortcuts.vdf"
+            label     = f"Steam ID  {steam_id}   |   {marker}"
+            btn = QPushButton(label)
+            btn.setCursor(Qt.PointingHandCursor)
+            if has_vdf:
+                captured_path = vdf_path
+                btn.clicked.connect(
+                    lambda checked=False, p=captured_path: self._select_existing(p)
+                )
+            else:
+                captured_dir = udir
+                btn.clicked.connect(
+                    lambda checked=False, d=captured_dir: self._create_for(d)
+                )
+            self._btn_area.addWidget(btn)
+
+    # ------------------------------------------------------------------
+    # Button actions
+    # ------------------------------------------------------------------
+
+    def _create_for(self, user_dir: Path) -> None:
+        target = str(user_dir / "config" / "shortcuts.vdf")
+        try:
+            create_empty_shortcuts_vdf(target)
+            self._confirm(target)
+            self._sub_label.setText(
+                f"shortcuts.vdf created for Steam ID {user_dir.name}.\n"
+                "Click Done to continue."
+            )
+            # Disable all account buttons so the choice is locked in
+            for i in range(self._btn_area.count()):
+                w = self._btn_area.itemAt(i).widget()
+                if w:
+                    w.setEnabled(False)
+        except Exception as exc:
+            self._set_status(f"Error: {exc}", color="#e74c3c")
+
+    def _select_existing(self, vdf_path: str) -> None:
+        """Use an existing shortcuts.vdf chosen via an account button."""
+        self._confirm(vdf_path)
+        # Disable the other account buttons
+        for i in range(self._btn_area.count()):
+            w = self._btn_area.itemAt(i).widget()
+            if w:
+                w.setEnabled(False)
 
     def _browse(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select shortcuts.vdf", "", "VDF files (*.vdf)"
         )
         if file_path:
-            self.file_path = file_path
-            self.path_edit.setText(file_path)
-            self.done_button.setEnabled(True)
+            self._confirm(file_path)
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -823,29 +1029,48 @@ def main() -> None:
 
     global STEAM_SHORTCUTS_FILE_PATH, STEAM_SHORTCUTS_DIRECTORY, STEAM_GRID_DIRECTORY
 
-    if not STEAM_SHORTCUTS_FILE_PATH or not os.path.exists(STEAM_SHORTCUTS_FILE_PATH) or not os.path.isfile(STEAM_SHORTCUTS_FILE_PATH):
-        not_found_dialog = ShortcutsNotFoundDialog()
-        if not_found_dialog.exec() == QDialog.Accepted:
-            new_path = not_found_dialog.file_path
-            if new_path and os.path.exists(new_path) and new_path.lower().endswith(".vdf"):
-                new_path = new_path.replace("/", "\\")
-                STEAM_SHORTCUTS_FILE_PATH = new_path
-                new_dir = os.path.dirname(new_path) + "\\"
-                STEAM_SHORTCUTS_DIRECTORY = new_dir
-                if not STEAM_GRID_DIRECTORY:
-                    STEAM_GRID_DIRECTORY = str(Path(new_dir).parent / "grid")
-        else:
-            sys.exit(0)
+    # ── Discover what's already on disk ──────────────────────────────────
+    existing_vdfs, user_dirs = discover_steam_state()
 
+    chosen_path: str = ""
+
+    if len(existing_vdfs) == 1 and len(user_dirs) == 1:
+        # Exactly one user with an existing vdf → use it silently
+        chosen_path = existing_vdfs[0]
+    else:
+        # Any other combination → show the picker
+        picker = ShortcutsPickerDialog(existing_vdfs, user_dirs)
+        if picker.exec() != QDialog.Accepted:
+            sys.exit(0)
+        chosen_path = picker.file_path
+
+    # Normalise path separators
+    chosen_path = chosen_path.replace("/", "\\")
+
+    if not chosen_path or not os.path.isfile(chosen_path):
+        sys.exit(0)
+
+    # ── Set the three runtime globals from the chosen file ───────────────
+    STEAM_SHORTCUTS_FILE_PATH = chosen_path
+    STEAM_SHORTCUTS_DIRECTORY = os.path.dirname(chosen_path) + "\\"
+
+    # Grid folder lives INSIDE the config folder: userdata/<id>/config/grid
+    # Only created if it doesn't already exist.
+    grid_dir = Path(chosen_path).parent / "grid"
+    os.makedirs(str(grid_dir), exist_ok=True)
+    STEAM_GRID_DIRECTORY = str(grid_dir)
+
+    # ── Validate the chosen file ─────────────────────────────────────────
     is_valid = False
-    if STEAM_SHORTCUTS_FILE_PATH and os.path.exists(STEAM_SHORTCUTS_FILE_PATH) and os.path.isfile(STEAM_SHORTCUTS_FILE_PATH):
-        try:
-            with open(STEAM_SHORTCUTS_FILE_PATH, "rb") as f:
-                root = vdf.binary_load(f)
-                if root.get('shortcuts') and len(root['shortcuts']) > 0:
-                    is_valid = True
-        except Exception:
-            pass
+    try:
+        with open(STEAM_SHORTCUTS_FILE_PATH, "rb") as f:
+            root = vdf.binary_load(f)
+            # Accept file as long as the 'shortcuts' key is present,
+            # even when it contains zero entries (freshly-created file).
+            if 'shortcuts' in root:
+                is_valid = True
+    except Exception:
+        pass
 
     if not is_valid:
         empty_dialog = ShortcutsEmptyDialog()

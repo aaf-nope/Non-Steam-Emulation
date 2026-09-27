@@ -6,8 +6,8 @@ import os
 import linecache
 
 total_games = 0
-data_text_file = "DebugScripts/data.txt"
-game_data_folder_path = "DebugScripts/games_data"
+data_text_file = "LegacyScripts/data.txt"
+game_data_folder_path = "LegacyScripts/GamesData"
 
 # read vdf file in binary and store it as d
 with open("shortcuts.vdf", "rb") as f:
