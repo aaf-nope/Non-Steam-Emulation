@@ -23,6 +23,8 @@ from datetime import datetime
 import os
 from pathlib import Path
 
+from PySide6.QtCore import Signal
+
 
 ####################################
 
@@ -674,6 +676,8 @@ class WizardController:
             shutil.copy(self.entry.preview_path, STEAM_GRID_DIRECTORY)
             os.rename(f"{STEAM_GRID_DIRECTORY}\\{os.path.basename(self.entry.preview_path)}", f"{STEAM_GRID_DIRECTORY}\\{art_id}.png")
 
+        #clean the game path to use backslashes instead of forward slashes for windows
+        self.entry.game_path = self.entry.game_path.replace("/", "\\")
 
         #adding game data to the file
         new_game =  {'appid': app_id,
