@@ -2,7 +2,7 @@
 
 A small Windows utility for adding emulated games to Steam as non-Steam games.
 
-I built this project to automate the repetitive task of adding emulated games to Steam with launch commands. What started as a Python script is now a complete GUI application.
+This project was made to solve a problem I had with adding emulated games on steam, since doing it manually every time was annoying and time consuming, this project aims to make the process easier and more convenient
 
 ## Screenshots
 
@@ -12,15 +12,14 @@ I built this project to automate the repetitive task of adding emulated games to
 
 ## Features
 
-- Add emulated games to Steam as non-Steam shortcuts via a unified GUI
+- Add emulated games to Steam as non-Steam shortcuts through the GUI
 - Select emulator executable and game file easily
 - Automatically build the emulator launch command and calculate the Steam App ID
-- Add and modify `shortcuts.vdf` entries safely, parsing it as structured data
+- Add and modify `shortcuts.vdf` entries safely
 - Automatic `shortcuts.vdf` backups before changes
 - Prompt for manual `shortcuts.vdf` location if automatic detection fails, and warn about corrupted files
 - Add Steam library artwork (Grid, Hero, Logo, Preview, Icon)
 - Open relevant Steam folders directly from the application
-- Add multiple games quickly with a step-by-step workflow
 
 ## How It Works
 
@@ -57,25 +56,10 @@ The implementation is based on Valve's documentation and community research into
 ```powershell
 python GUI.py
 ```
-
-## Project Structure
-
-```text
-Non-Steam-Emulation/
-├── GUI.py                # Main application source
-├── README.md
-├── icon.ico
-├── .gitignore
-├── Screenshots/          # UI concepts and screenshots
-└── LegacyScripts/        # Earlier development versions and experiments
-```
-
-The `LegacyScripts` directory contains earlier versions, preserving the project's evolution into the final GUI application.
-
 ## Development
 
 This project evolved significantly over time:
-- Started as a simple script experimenting with Steam's shortcut format.
+- Started as a simple script experimenting with Steam's shortcut format, you can find this initial scripts in the `LegacyScripts` directory.
 - Adopted the Python `vdf` package to parse `shortcuts.vdf` as structured data instead of fragile raw text.
 - Evolved into a complete PySide6 GUI application.
 >- **Version 1.1.0 update:** Following a user issue, the `shortcuts.vdf` system was revamped and the GUI was completely redesigned. The app shifted to a single fixed-size window using `QStackedWidget` (merging the picker, paths, artwork, and completion screens), unified the UI with cyan-blue accents, improved inline error handling, and refined layout alignments.
@@ -96,6 +80,7 @@ Extensively tested on Windows for:
 - Accurate artwork placement in Steam directories
 - Resiliency against missing or corrupted `shortcuts.vdf` files
 - Smooth GUI workflow
+- Checking if the game was added to the Steam library
 
 ## Limitations
 
@@ -117,8 +102,9 @@ Developed using official documentation and community resources:
 
 ## AI Assistance Disclosure
 
-I developed the application's core logic, Steam integration, file handling, App ID logic, and UI design myself as a personal challenge. 
+I developed the application's core logic, Steam integration, file handling, App ID logic, and UI design myself as a personal challenge, you could check the `legacyScripts` directory to see the original scripts.
 I intentionally avoided AI for the Python backend to test my own problem-solving skills.
-AI (Claude) was only used to implement the PySide6 GUI layer based on my design requirements, which I then integrated and tested manually.
 
-I fully recognize that using AI during development is normal and can be extremely useful, hell I even used AI while writing this very README, and I could have relied on it much more heavily to make the project easier or faster. Instead, I chose to treat this project as a test of my own programming ability and problem-solving skills. The result is something I can genuinely say I understand and built myself.
+AI (Claude) was only used to implement the PySide6 GUI layer based on my design requirements, which I then integrated and tested manually. The only reason why I had to use claude was because I was short on time, I'm still planning on learning pyside6 later.
+
+AI was also used to write the first iterations of this README, since I was still new and didn't know what to include or explain. But now since I have a general idea how it should look like, I reworked parts of the README that I didn't like.
